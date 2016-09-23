@@ -79,7 +79,9 @@ NSString * AFPercentEscapedStringFromString(NSString *string) {
 #pragma mark -
 
 @interface AFQueryStringPair : NSObject
+// 为 key
 @property (readwrite, nonatomic, strong) id field;
+// 为 value
 @property (readwrite, nonatomic, strong) id value;
 
 - (instancetype)initWithField:(id)field value:(id)value;
@@ -101,6 +103,7 @@ NSString * AFPercentEscapedStringFromString(NSString *string) {
     return self;
 }
 
+// URLEncoded 处理
 - (NSString *)URLEncodedStringValue {
     if (!self.value || [self.value isEqual:[NSNull null]]) {
         return AFPercentEscapedStringFromString([self.field description]);
@@ -116,9 +119,11 @@ NSString * AFPercentEscapedStringFromString(NSString *string) {
 FOUNDATION_EXPORT NSArray * AFQueryStringPairsFromDictionary(NSDictionary *dictionary);
 FOUNDATION_EXPORT NSArray * AFQueryStringPairsFromKeyAndValue(NSString *key, id value);
 
+// 构建字符串 用&连接
 NSString * AFQueryStringFromParameters(NSDictionary *parameters) {
     NSMutableArray *mutablePairs = [NSMutableArray array];
     for (AFQueryStringPair *pair in AFQueryStringPairsFromDictionary(parameters)) {
+        // URLEncoded 处理
         [mutablePairs addObject:[pair URLEncodedStringValue]];
     }
 
@@ -132,8 +137,14 @@ NSArray * AFQueryStringPairsFromDictionary(NSDictionary *dictionary) {
 NSArray * AFQueryStringPairsFromKeyAndValue(NSString *key, id value) {
     NSMutableArray *mutableQueryStringComponents = [NSMutableArray array];
 
+    // 根据需要排列的对象的description来进行升序排列，并且selector使用的是compare:
+    // 因为对象的description返回的是NSString，所以此处compare:使用的是NSString的compare函数
+    // 即@[@"foo", @"bar", @"bae"] ----> @[@"bae", @"bar",@"foo"]
     NSSortDescriptor *sortDescriptor = [NSSortDescriptor sortDescriptorWithKey:@"description" ascending:YES selector:@selector(compare:)];
 
+    // 判断 value 类型
+    // 递归调用并解析
+    // 因为不能保证NSDictionary的value中存放的是一个NSArray、NSSet
     if ([value isKindOfClass:[NSDictionary class]]) {
         NSDictionary *dictionary = value;
         // Sort dictionary keys to ensure consistent ordering in query string, which is important when deserializing potentially ambiguous sequences, such as an array of dictionaries
@@ -154,6 +165,7 @@ NSArray * AFQueryStringPairsFromKeyAndValue(NSString *key, id value) {
             [mutableQueryStringComponents addObjectsFromArray:AFQueryStringPairsFromKeyAndValue(key, obj)];
         }
     } else {
+        // 结束递归 最后一个 value 为 NSString
         [mutableQueryStringComponents addObject:[[AFQueryStringPair alloc] initWithField:key value:value]];
     }
 
@@ -171,6 +183,11 @@ NSArray * AFQueryStringPairsFromKeyAndValue(NSString *key, id value) {
 
 #pragma mark -
 
+/**
+    static 方法，表示该方法只能在本文件中使用
+    此处需要observer的keypath为allowsCellularAccess、cachePolicy、HTTPShouldHandleCookies
+    HTTPShouldUsePipelining、networkServiceType、timeoutInterval
+ */
 static NSArray * AFHTTPRequestSerializerObservedKeyPaths() {
     static NSArray *_AFHTTPRequestSerializerObservedKeyPaths = nil;
     static dispatch_once_t onceToken;
@@ -243,6 +260,7 @@ static void *AFHTTPRequestSerializerObserverContext = &AFHTTPRequestSerializerOb
     self.mutableObservedChangedKeyPaths = [NSMutableSet set];
     for (NSString *keyPath in AFHTTPRequestSerializerObservedKeyPaths()) {
         if ([self respondsToSelector:NSSelectorFromString(keyPath)]) {
+            // 所有属性添加 KVO，并且是同一个 context
             [self addObserver:self forKeyPath:keyPath options:NSKeyValueObservingOptionNew context:AFHTTPRequestSerializerObserverContext];
         }
     }
@@ -351,12 +369,25 @@ forHTTPHeaderField:(NSString *)field
 }
 
 #pragma mark -
-
+/**
+ 使用指定的HTTP method和URLString来构建一个NSMutableURLRequest对象实例
+ 
+ 如果method是GET、HEAD、DELETE，那parameter将会被用来构建一个基于url编码的查询字符串（query url）
+ ，并且这个字符串会直接加到request的url后面。对于其他的Method，比如POST/PUT，它们会根
+ 据parameterEncoding属性进行编码，而后加到request的http body上。
+ @param method request的HTTP methodt，比如 `GET`, `POST`, `PUT`, or `DELETE`. 该参数不能为空
+ @param URLString 用来创建request的URL
+ @param parameters 既可以对method为GET的request设置一个查询字符串(query string)，也可以设置到request的HTTP body上
+ @param error 构建request时发生的错误
+ 
+ @return  一个NSMutableURLRequest的对象
+ */
 - (NSMutableURLRequest *)requestWithMethod:(NSString *)method
                                  URLString:(NSString *)URLString
                                 parameters:(id)parameters
                                      error:(NSError *__autoreleasing *)error
 {
+    // 进行参数断言
     NSParameterAssert(method);
     NSParameterAssert(URLString);
 
@@ -364,15 +395,26 @@ forHTTPHeaderField:(NSString *)field
 
     NSParameterAssert(url);
 
+    // 使用url构建并初始化NSMutableURLRequest，然后设置HTTPMethod
     NSMutableURLRequest *mutableRequest = [[NSMutableURLRequest alloc] initWithURL:url];
     mutableRequest.HTTPMethod = method;
 
+    // 给NSMutableURLRequest自带的属性赋值
+    // 然后通过判断mutableObservedChangedKeyPaths（NSMutableSet）中是否有这个keyPath，来设定mutableRequest对应的keyPath值
+    // AFHTTPRequestSerializerObservedKeyPaths这个数组里的属性是固定的，且在 init 方法里全都 KVO 了
+    /**
+     *  当 AFHTTPRequestSerializerObserverContext 中有 value 变化了(且变化后的新值不为 NSNull null)，就会响应 observerValueForKeyPath 这个函数，从而mutableObservedChangedKeyPaths就会添加这个 keyPath
+     */
     for (NSString *keyPath in AFHTTPRequestSerializerObservedKeyPaths()) {
         if ([self.mutableObservedChangedKeyPaths containsObject:keyPath]) {
             [mutableRequest setValue:[self valueForKeyPath:keyPath] forKey:keyPath];
         }
     }
 
+    // 将传入的parameters进行编码，并添加到request中
+    /**
+     *  一般我们请求都会按key=value的方式带上各种参数，GET方法参数直接加在URL上，POST方法放在body上，NSURLRequest没有封装好这个参数的解析，只能我们自己拼好字符串。AFNetworking提供了接口，让参数可以是NSDictionary, NSArray, NSSet这些类型，再由内部解析成字符串后赋给NSURLRequest。
+     */
     mutableRequest = [[self requestBySerializingRequest:mutableRequest withParameters:parameters error:error] mutableCopy];
 
 	return mutableRequest;
@@ -479,14 +521,18 @@ forHTTPHeaderField:(NSString *)field
 
     NSMutableURLRequest *mutableRequest = [request mutableCopy];
 
+    // 设置request的http header field
     [self.HTTPRequestHeaders enumerateKeysAndObjectsUsingBlock:^(id field, id value, BOOL * __unused stop) {
         if (![request valueForHTTPHeaderField:field]) {
             [mutableRequest setValue:value forHTTPHeaderField:field];
         }
     }];
 
+    
+    // 构建查询字符串 query
     NSString *query = nil;
     if (parameters) {
+        // 第一种，自定义了queryStringSerialization
         if (self.queryStringSerialization) {
             NSError *serializationError;
             query = self.queryStringSerialization(request, parameters, &serializationError);
@@ -499,6 +545,7 @@ forHTTPHeaderField:(NSString *)field
                 return nil;
             }
         } else {
+            // 第二种，使用AFQueryStringFromParameters() 方法
             switch (self.queryStringSerializationStyle) {
                 case AFHTTPRequestQueryStringDefaultStyle:
                     query = AFQueryStringFromParameters(parameters);
@@ -506,13 +553,18 @@ forHTTPHeaderField:(NSString *)field
             }
         }
     }
-
+    // self.HTTPMethodsEncodingParametersInURI = [NSSet setWithObjects:@"GET", @"HEAD", @"DELETE", nil];
+    // 这几个method的quey是拼接到url后面的。而POST、PUT是把query拼接到http body中的。
+    // 判断该request中是否包含了GET、HEAD、DELETE
     if ([self.HTTPMethodsEncodingParametersInURI containsObject:[[request HTTPMethod] uppercaseString]]) {
         if (query && query.length > 0) {
+            // 将query合并到mutbleRequest的query url 上
             mutableRequest.URL = [NSURL URLWithString:[[mutableRequest.URL absoluteString] stringByAppendingFormat:mutableRequest.URL.query ? @"&%@" : @"?%@", query]];
         }
     } else {
         // #2864: an empty string is a valid x-www-form-urlencoded payload
+        
+        // 将query设置到http body上
         if (!query) {
             query = @"";
         }

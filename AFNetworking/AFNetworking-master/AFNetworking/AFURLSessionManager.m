@@ -747,16 +747,20 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
     return [self dataTaskWithRequest:request uploadProgress:nil downloadProgress:nil completionHandler:completionHandler];
 }
 
+// 创建 dataTask
 - (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request
                                uploadProgress:(nullable void (^)(NSProgress *uploadProgress)) uploadProgressBlock
                              downloadProgress:(nullable void (^)(NSProgress *downloadProgress)) downloadProgressBlock
                             completionHandler:(nullable void (^)(NSURLResponse *response, id _Nullable responseObject,  NSError * _Nullable error))completionHandler {
 
     __block NSURLSessionDataTask *dataTask = nil;
+    // 解决iOS8之前的一个bug
     url_session_manager_create_task_safely(^{
+        //  用NSURLSession创建NSURLSessionDataTask
         dataTask = [self.session dataTaskWithRequest:request];
     });
-
+    
+    // 给data task添加了一个AFURLSessionManagerTaskDelegate
     [self addDelegateForDataTask:dataTask uploadProgress:uploadProgressBlock downloadProgress:downloadProgressBlock completionHandler:completionHandler];
 
     return dataTask;

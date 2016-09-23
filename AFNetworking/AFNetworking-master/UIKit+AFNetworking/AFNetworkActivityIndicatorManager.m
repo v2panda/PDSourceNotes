@@ -25,13 +25,23 @@
 #import "AFURLSessionManager.h"
 
 typedef NS_ENUM(NSInteger, AFNetworkActivityManagerState) {
+    // 停止旋转
     AFNetworkActivityManagerStateNotActive,
+    // 延迟开始旋转（此时是不转的）
     AFNetworkActivityManagerStateDelayingStart,
+    // 开始旋转
     AFNetworkActivityManagerStateActive,
+    // 延迟停止旋转（此时还在旋转）
     AFNetworkActivityManagerStateDelayingEnd
 };
 
+/**
+ *  Apple的HIG(Human Interface Guidelines)认为有些session task时间太短了，有可能用户还没意识到session task的进行，就已经结束了,所以不用旋转（这个用户的意识盲区在此处默认设定为1秒，即activationDelay）
+ */
 static NSTimeInterval const kDefaultAFNetworkActivityManagerActivationDelay = 1.0;
+/**
+ *  如果有多个session task正在进行，前一个task结束之后，不一会（这个不一会的时间，默认是0.17秒，也就是completionDelay）另一个task就开始，此处认为这个间隙没必要停止菊花转。
+ */
 static NSTimeInterval const kDefaultAFNetworkActivityManagerCompletionDelay = 0.17;
 
 static NSURLRequest * AFNetworkRequestFromNotification(NSNotification *notification) {
@@ -48,6 +58,7 @@ typedef void (^AFNetworkActivityActionBlock)(BOOL networkActivityIndicatorVisibl
 @property (readwrite, nonatomic, assign) NSInteger activityCount;
 @property (readwrite, nonatomic, strong) NSTimer *activationDelayTimer;
 @property (readwrite, nonatomic, strong) NSTimer *completionDelayTimer;
+/**真实的记录session task起始的状态。不过这个属性是根据activityCount来决定的*/
 @property (readonly, nonatomic, getter = isNetworkActivityOccurring) BOOL networkActivityOccurring;
 @property (nonatomic, copy) AFNetworkActivityActionBlock networkActivityActionBlock;
 @property (nonatomic, assign) AFNetworkActivityManagerState currentState;
@@ -102,6 +113,7 @@ typedef void (^AFNetworkActivityActionBlock)(BOOL networkActivityIndicatorVisibl
 }
 
 - (BOOL)isNetworkActivityOccurring {
+    // 加上锁，防止多个网络线程同时修改
     @synchronized(self) {
         return self.activityCount > 0;
     }
@@ -170,8 +182,10 @@ typedef void (^AFNetworkActivityActionBlock)(BOOL networkActivityIndicatorVisibl
 
 #pragma mark - Internal State Management
 - (void)setCurrentState:(AFNetworkActivityManagerState)currentState {
+    // 加上锁，防止多个网络线程同时修改
     @synchronized(self) {
         if (_currentState != currentState) {
+            // KVO手动通知
             [self willChangeValueForKey:@"currentState"];
             _currentState = currentState;
             switch (currentState) {
@@ -191,6 +205,7 @@ typedef void (^AFNetworkActivityActionBlock)(BOOL networkActivityIndicatorVisibl
                     [self startCompletionDelayTimer];
                     break;
             }
+            // KVO手动通知
             [self didChangeValueForKey:@"currentState"];
         }
         
