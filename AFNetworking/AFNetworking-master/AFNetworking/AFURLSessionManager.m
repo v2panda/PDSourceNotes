@@ -145,6 +145,11 @@ typedef void (^AFURLSessionTaskCompletionHandler)(NSURLResponse *response, id re
 - (void)setupProgressForTask:(NSURLSessionTask *)task {
     __weak __typeof__(task) weakTask = task;
 
+    /*
+     上传的totalUnitCount就对应期望发送(send)的数据大小，下载任务的就对应期望接收(receive)的数据大小。
+     
+     接着就是设置这两个NSProgress对应的cancel、pause和resume这三个状态，正好对应session task的cancel、suspend和resume三个状态
+    */
     self.uploadProgress.totalUnitCount = task.countOfBytesExpectedToSend;
     self.downloadProgress.totalUnitCount = task.countOfBytesExpectedToReceive;
     [self.uploadProgress setCancellable:YES];
@@ -181,7 +186,8 @@ typedef void (^AFURLSessionTaskCompletionHandler)(NSURLResponse *response, id re
             [strongTask resume];
         }];
     }
-
+    
+    // 给两个progress添加KVO NSProgress的fractionCompleted属性（任务已经完成的比例，取值为0~1）
     [self.downloadProgress addObserver:self
                             forKeyPath:NSStringFromSelector(@selector(fractionCompleted))
                                options:NSKeyValueObservingOptionNew
@@ -211,7 +217,12 @@ typedef void (^AFURLSessionTaskCompletionHandler)(NSURLResponse *response, id re
 }
 
 #pragma mark - NSURLSessionTaskDelegate
-
+/*
+ 在每一个 NSURLSessionTask 结束时，都会在代理方法 URLSession:task:didCompleteWithError: 中：
+ 
+ 调用传入的 completionHander block
+ 发出 AFNetworkingTaskDidCompleteNotification 通知
+ */
 - (void)URLSession:(__unused NSURLSession *)session
               task:(NSURLSessionTask *)task
 didCompleteWithError:(NSError *)error
@@ -220,6 +231,7 @@ didCompleteWithError:(NSError *)error
 
     __block id responseObject = nil;
 
+    // 1：获取数据, 存储 `responseSerializer` 和 `downloadFileURL`
     __block NSMutableDictionary *userInfo = [NSMutableDictionary dictionary];
     userInfo[AFNetworkingTaskDidCompleteResponseSerializerKey] = manager.responseSerializer;
 
@@ -238,6 +250,7 @@ didCompleteWithError:(NSError *)error
     }
 
     if (error) {
+        // 2：在存在错误时调用 `completionHandler`
         userInfo[AFNetworkingTaskDidCompleteErrorKey] = error;
 
         dispatch_group_async(manager.completionGroup ?: url_session_manager_completion_group(), manager.completionQueue ?: dispatch_get_main_queue(), ^{
@@ -250,6 +263,7 @@ didCompleteWithError:(NSError *)error
             });
         });
     } else {
+        // 如果在执行当前 task 时没有遇到错误，那么先对数据进行序列化，然后同样调用 block 并发送通知。
         dispatch_async(url_session_manager_processing_queue(), ^{
             NSError *serializationError = nil;
             responseObject = [manager.responseSerializer responseObjectForResponse:task.response data:data error:&serializationError];
@@ -369,7 +383,10 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
 @end
 
 @implementation _AFURLSessionTaskSwizzling
-
+/*
+    _AFURLSessionTaskSwizzling 的唯一功能就是修改 NSURLSessionTask 的 resume 和 suspend 方法，使用下面的方法替换原有的实现 
+    af_resume af_suspend
+ */
 + (void)load {
     /**
      WARNING: Trouble Ahead
@@ -517,7 +534,8 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
     self.session = [NSURLSession sessionWithConfiguration:self.sessionConfiguration delegate:self delegateQueue:self.operationQueue];
 
     self.responseSerializer = [AFJSONResponseSerializer serializer];
-
+    
+    // AFSecurityPolicy 是 AFNetworking 用来保证 HTTP 请求安全的类，它被 AFURLSessionManager 持有
     self.securityPolicy = [AFSecurityPolicy defaultPolicy];
 
 #if !TARGET_OS_WATCH
@@ -599,7 +617,9 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
 
     [self.lock lock];
     self.mutableTaskDelegatesKeyedByTaskIdentifier[@(task.taskIdentifier)] = delegate;
+    // 设置uploadProgress和downloadProgress这两个NSProgress变量
     [delegate setupProgressForTask:task];
+    // 给session task添加KVO
     [self addNotificationObserverForTask:task];
     [self.lock unlock];
 }
@@ -761,6 +781,7 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
     });
     
     // 给data task添加了一个AFURLSessionManagerTaskDelegate
+    // 主要为 task 提供进度管理功能
     [self addDelegateForDataTask:dataTask uploadProgress:uploadProgressBlock downloadProgress:downloadProgressBlock completionHandler:completionHandler];
 
     return dataTask;
@@ -949,7 +970,7 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
 }
 
 #pragma mark - NSURLSessionDelegate
-
+//  当前这个session已经失效时，该代理方法被调用
 - (void)URLSession:(NSURLSession *)session
 didBecomeInvalidWithError:(NSError *)error
 {
@@ -960,25 +981,42 @@ didBecomeInvalidWithError:(NSError *)error
     [[NSNotificationCenter defaultCenter] postNotificationName:AFURLSessionDidInvalidateNotification object:session];
 }
 
+/*
+    web服务器接收到客户端请求时，有时候需要先验证客户端是否为正常用户，再决定是够返回真实数据。这种情况称之为服务端要求客户端接收挑战（NSURLAuthenticationChallenge *challenge）。接收到挑战后，客户端要根据服务端传来的challenge来生成completionHandler所需的NSURLSessionAuthChallengeDisposition disposition和NSURLCredential *credential（disposition指定应对这个挑战的方法，而credential是客户端生成的挑战证书，注意只有challenge中认证方法为NSURLAuthenticationMethodServerTrust的时候，才需要生成挑战证书）。最后调用completionHandler回应服务器端的挑战。
+ */
 - (void)URLSession:(NSURLSession *)session
 didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
  completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition disposition, NSURLCredential *credential))completionHandler
 {
+    //挑战处理类型为 默认
+    /*
+     NSURLSessionAuthChallengePerformDefaultHandling：默认方式处理
+     NSURLSessionAuthChallengeUseCredential：使用指定的证书
+     NSURLSessionAuthChallengeCancelAuthenticationChallenge：取消挑战
+     */
     NSURLSessionAuthChallengeDisposition disposition = NSURLSessionAuthChallengePerformDefaultHandling;
     __block NSURLCredential *credential = nil;
 
     if (self.sessionDidReceiveAuthenticationChallenge) {
+        // sessionDidReceiveAuthenticationChallenge是自定义方法，用来如何应对服务器端的认证挑战
         disposition = self.sessionDidReceiveAuthenticationChallenge(session, challenge, &credential);
     } else {
+        // 此处服务器要求客户端的接收认证挑战方法是NSURLAuthenticationMethodServerTrust
+        // 也就是说服务器端需要客户端返回一个根据认证挑战的保护空间提供的信任（即challenge.protectionSpace.serverTrust）产生的挑战证书。
+        // 而这个证书就需要使用credentialForTrust:来创建一个NSURLCredential对象
         if ([challenge.protectionSpace.authenticationMethod isEqualToString:NSURLAuthenticationMethodServerTrust]) {
+            // 基于客户端的安全策略来决定是否信任该服务器，不信任的话，也就没必要响应挑战
             if ([self.securityPolicy evaluateServerTrust:challenge.protectionSpace.serverTrust forDomain:challenge.protectionSpace.host]) {
+                // 创建挑战证书（注：挑战方式为UseCredential和PerformDefaultHandling都需要新建挑战证书）
                 credential = [NSURLCredential credentialForTrust:challenge.protectionSpace.serverTrust];
+                // 确定挑战的方式
                 if (credential) {
                     disposition = NSURLSessionAuthChallengeUseCredential;
                 } else {
                     disposition = NSURLSessionAuthChallengePerformDefaultHandling;
                 }
             } else {
+                // 取消挑战
                 disposition = NSURLSessionAuthChallengeCancelAuthenticationChallenge;
             }
         } else {
