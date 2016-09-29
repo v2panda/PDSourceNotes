@@ -521,18 +521,17 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
     if (!self) {
         return nil;
     }
-
+    // 默认为 defaultSessionConfiguration
     if (!configuration) {
         configuration = [NSURLSessionConfiguration defaultSessionConfiguration];
     }
-
     self.sessionConfiguration = configuration;
-
+    // 初始化代理队列
     self.operationQueue = [[NSOperationQueue alloc] init];
     self.operationQueue.maxConcurrentOperationCount = 1;
-
+    // 初始化 session
     self.session = [NSURLSession sessionWithConfiguration:self.sessionConfiguration delegate:self delegateQueue:self.operationQueue];
-
+    // 初始化 response 序列，默认为 JSON
     self.responseSerializer = [AFJSONResponseSerializer serializer];
     
     // AFSecurityPolicy 是 AFNetworking 用来保证 HTTP 请求安全的类，它被 AFURLSessionManager 持有
@@ -541,12 +540,12 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
 #if !TARGET_OS_WATCH
     self.reachabilityManager = [AFNetworkReachabilityManager sharedManager];
 #endif
-
+    // 初始化用来存放 AFURLSessionManagerTaskDelegate 的字典
     self.mutableTaskDelegatesKeyedByTaskIdentifier = [[NSMutableDictionary alloc] init];
-
+    // 初始化 NSLock
     self.lock = [[NSLock alloc] init];
     self.lock.name = AFURLSessionManagerLockName;
-
+    // 为已有的 task 设置代理
     [self.session getTasksWithCompletionHandler:^(NSArray *dataTasks, NSArray *uploadTasks, NSArray *downloadTasks) {
         for (NSURLSessionDataTask *task in dataTasks) {
             [self addDelegateForDataTask:task uploadProgress:nil downloadProgress:nil completionHandler:nil];
